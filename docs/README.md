@@ -252,5 +252,6 @@ Every feature, the experience it must give and the code, tests and documents beh
 | [119-app-removal-status.md](119-app-removal-status.md) | 卸载中断后 App 提示与独立标记读取，真机体验待验 |
 | [121-acceptance-checklist.md](121-acceptance-checklist.md) | 发版验收清单：重装后 Agent 在真机上按截图操作一遍十项，截图报告 |
 | [122-converge-and-migrations.md](122-converge-and-migrations.md) | 设计稿：Android 设置每次开机收敛，发版能送到；一次性迁移统一成账本（P1、P2） |
+| [123-phy110-onboarding.md](123-phy110-onboarding.md) | OPPO Find X7 Ultra / PHY110 接入记录：保留 ColorOS 的独立安装路线、L0–L3 分阶段与判定门、三处设备适配点 |
 
 - [Termux prefix 构建说明](research/termux-prefix-build.md)：固定来源、可重复构建及 Android 运行验收边界。
