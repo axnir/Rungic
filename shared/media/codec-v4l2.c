@@ -64,6 +64,17 @@ static uint32_t fourcc_of(int kind) {
  return kind==0?V4L2_PIX_FMT_H264:kind==1?V4L2_PIX_FMT_HEVC:kind==2?V4L2_PIX_FMT_VP9:0;
 }
 
+/* Whether this is the video core node that codes in the direction asked for. Some firmware leaves
+ * the card name empty even though the same name is what QUERYCAP reports (PHY110: video32/33 give
+ * "", docs/123), so a memory-to-memory device is accepted as well: the format test in find_node
+ * still decides which direction it codes, and a camera node is not memory-to-memory. */
+static int is_core(const struct v4l2_capability *cap,int encoder) {
+ if(!strcmp((char *)cap->card,encoder?"msm_vidc_encoder":"msm_vidc_decoder"))return 1;
+ uint32_t caps=cap->capabilities;
+ if(caps&V4L2_CAP_DEVICE_CAPS)caps=cap->device_caps;
+ return (caps&(V4L2_CAP_VIDEO_M2M|V4L2_CAP_VIDEO_M2M_MPLANE))!=0;
+}
+
 /* /dev/videoN whose driver calls itself msm_vidc_decoder (msm_vidc_encoder) and takes (gives)
  * this codec, or -1. */
 static int find_node(uint32_t fourcc,int encoder) {
@@ -80,7 +91,7 @@ static int find_node(uint32_t fourcc,int encoder) {
   int fd=open(path,O_RDWR|O_NONBLOCK|O_CLOEXEC);
   if(fd>=0) {
    struct v4l2_capability cap;int ok=0;
-   if(!xioctl(fd,VIDIOC_QUERYCAP,&cap) && !strcmp((char *)cap.card,encoder?"msm_vidc_encoder":"msm_vidc_decoder")) {
+   if(!xioctl(fd,VIDIOC_QUERYCAP,&cap) && is_core(&cap,encoder)) {
     struct v4l2_fmtdesc d={.type=encoder?CAP:OUT};
     for(d.index=0;!xioctl(fd,VIDIOC_ENUM_FMT,&d);d.index++)if(d.pixelformat==fourcc){ok=1;break;}
    }

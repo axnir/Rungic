@@ -97,7 +97,35 @@ def test_without_the_device_or_turned_off_decoding_goes_to_the_app(driver):
         assert result['sessions'] == 0 and len(broker.configs) == 1
 
 
+# covers: apps.hw-codec/E9
+def test_an_empty_card_name_on_a_memory_to_memory_device_is_still_the_decoder(driver):
+    # PHY110's msm_vidc leaves the card name empty, which is what QUERYCAP then reports as well
+    # (docs/123): the memory-to-memory device passing the format test is the decoder all the same.
+    result = run(driver, 'decode', FAKE_VIDC_NO_CARD='1')
+    assert result['open'] is True and 'V4L2' in result['name'], result
+    assert result['violations'] == 0, result['log']
+    assert [r['id'] for r in result['records']] == list(range(6))
+
+
+# covers: apps.hw-codec/E9
+def test_an_empty_card_name_that_is_not_memory_to_memory_is_not_the_decoder(driver):
+    # A camera node with the same empty name (video0 reports cam-req-mgr, video32 nothing): not M2M,
+    # so it must not be taken, and decoding goes to the app as it does without the device.
+    def decode(config, frame):
+        return []
+    with contracts.CodecStandIn(output=decode) as broker:
+        result = run(driver, 'decode', frames=2, broker=broker, FAKE_VIDC_NO_CARD='plain')
+    assert result['open'] is True and result['name'] == 'c2.qti.avc.decoder', result
+
+
 ENCODER = '/dev/rungic-test-video33'
+
+
+# covers: apps.hw-codec/E10
+def test_the_encoder_is_found_by_memory_to_memory_when_the_card_name_is_empty(driver):
+    result = run(driver, 'encode', frames=5, RUNGIC_CODEC_V4L2_ENCODER=ENCODER, FAKE_VIDC_NO_CARD='1')
+    assert result['open'] is True and 'V4L2' in result['name'], result
+    assert result['violations'] == 0 and result['failures'] == 0 and result['ended'] == 1, result
 
 
 # covers: apps.hw-codec/E10

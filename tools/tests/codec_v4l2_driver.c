@@ -162,9 +162,20 @@ static void encode(void) {
   for(int k=0;k<enc.n_cap;k++)if(enc.cap[k].queued){enc.cap[k].queued=0;enc.cap[k].bytes=0;enc.cap[k].done=2;enc.ready[enc.n_ready++]=k;enc.last_sent=1;break;}
 }
 
+/* What the driver reports about itself. FAKE_VIDC_NO_CARD models firmware that leaves the card
+ * name empty (PHY110, docs/123): "1" is the video core (memory-to-memory), "plain" is a device of
+ * another kind that must not be taken for it. */
+static void report_cap(struct v4l2_capability *c, const char *card, const char *driver) {
+ memset(c,0,sizeof(*c));
+ const char *mode=getenv("FAKE_VIDC_NO_CARD");
+ if(!mode)strcpy((char *)c->card,card);
+ else if(strcmp(mode,"plain"))c->capabilities=V4L2_CAP_VIDEO_M2M|V4L2_CAP_VIDEO_M2M_MPLANE;
+ if(driver)strcpy((char *)c->driver,driver);
+}
+
 static int encoder_ioctl(unsigned long request,void *arg) {
  switch(request) {
- case VIDIOC_QUERYCAP:{struct v4l2_capability *c=arg;memset(c,0,sizeof(*c));strcpy((char *)c->card,"msm_vidc_encoder");return 0;}
+ case VIDIOC_QUERYCAP:{struct v4l2_capability *c=arg;report_cap(c,"msm_vidc_encoder",NULL);return 0;}
  case VIDIOC_ENUM_FMT:{struct v4l2_fmtdesc *d=arg;static const uint32_t f[]={V4L2_PIX_FMT_H264,V4L2_PIX_FMT_HEVC};
   if(d->type!=CAP || d->index>=2){errno=EINVAL;return -1;}d->pixelformat=f[d->index];return 0;}
  case VIDIOC_S_FMT:{struct v4l2_format *f=arg;
@@ -215,7 +226,7 @@ int __wrap_ioctl(int fd,unsigned long request,...) {
  if(fd==enc.fd && fd>=0)return encoder_ioctl(request,arg);
  if(fd!=dev.fd || fd<0)return __real_ioctl(fd,request,arg);
  switch(request) {
- case VIDIOC_QUERYCAP:{struct v4l2_capability *c=arg;memset(c,0,sizeof(*c));strcpy((char *)c->card,"msm_vidc_decoder");strcpy((char *)c->driver,"msm_vidc_driver");return 0;}
+ case VIDIOC_QUERYCAP:{struct v4l2_capability *c=arg;report_cap(c,"msm_vidc_decoder","msm_vidc_driver");return 0;}
  case VIDIOC_ENUM_FMT:{struct v4l2_fmtdesc *d=arg;static const uint32_t f[]={V4L2_PIX_FMT_H264,V4L2_PIX_FMT_HEVC,V4L2_PIX_FMT_VP9};
   if(d->type!=OUT || d->index>=3){errno=EINVAL;return -1;}d->pixelformat=f[d->index];return 0;}
  case VIDIOC_S_FMT:{struct v4l2_format *f=arg;

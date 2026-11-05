@@ -10,6 +10,8 @@ phone has (standalone.py's preflight refuses a phone that is not Enforcing, test
 import os
 from pathlib import Path
 import re
+import stat
+import shutil
 import subprocess
 import tempfile
 import time
@@ -91,16 +93,29 @@ class Controller(unittest.TestCase):
         self.env = dict(os.environ, PATH=f"{stubs}:{os.environ['PATH']}")
         self.devices('/dev/null', '/dev/zero')
 
-    def devices(self, gpu, heap, video=None, encoder=None):
-        """The controller with Android's paths in the sandbox; the GPU, DMA heap and video decoder and
-        encoder nodes are `gpu`, `heap`, `video` and `encoder` (default: none there)."""
+    def devices(self, gpu, heap, video=()):
+        """The controller with Android's paths in the sandbox; the GPU and DMA heap are `gpu` and
+        `heap`. `video` triples (node, (major, minor), driver) for the sandbox's video4linux class
+        and a character device of those numbers under its /dev stand-in: as on a phone the class
+        entry is named after the device, and the controller decides by the driver behind the node,
+        never by node number or card name (PHY110 reports an empty one)."""
         text = re.sub(r'(?<![\w/])(/data/adb|/data/user/0|/storage/emulated/0|/product/etc/rungic|/dev/memcg|/dev/cpuctl)\b',
                       f'{self.root}\\1', CONTROLLER.read_text())
         text = text.replace('/dev/kgsl-3d0', gpu).replace('/dev/dma_heap/system', heap)
-        text = text.replace('/dev/video32', video or str(self.root / 'no-video32'))
-        text = text.replace('/dev/video33', encoder or str(self.root / 'no-video33'))
+        text = text.replace('/sys/class/video4linux', str(self.root / 'sys/class/video4linux'))
+        text = text.replace('video_nodes /dev', f'video_nodes {self.root}/dev')
         self.script = self.root / 'rungic-plasma'
         self.script.write_text(text.replace('#!/system/bin/sh', '#!/bin/sh'))
+        classdir = self.root / 'sys/class/video4linux'
+        shutil.rmtree(classdir, ignore_errors=True)
+        devdir = self.root / 'dev'
+        for node, numbers, driver in video:
+            (classdir / node / 'device').mkdir(parents=True)
+            (classdir / node / 'device/driver').symlink_to(f'../../../../bus/platform/drivers/{driver}')
+            devdir.mkdir(parents=True, exist_ok=True)
+            # A symlink would do for the existence test, but stat does not follow it: the numbers
+            # the controller grants have to be the node's own, as they are on a phone.
+            os.mknod(devdir / node, 0o600 | stat.S_IFCHR, os.makedev(*numbers))
 
     def control(self, action):
         return subprocess.Popen(['sh', str(self.script), action], env=self.env, text=True,
@@ -142,14 +157,20 @@ class Controller(unittest.TestCase):
             start = [line for line in self.log() if line.startswith('start ')][-1]
             for rule in rules:
                 self.assertIn(f'-s lxc.cgroup2.devices.allow={rule}', start)
-        # The video decoder and encoder are granted when the phone has them, their absence stops nothing.
-        self.devices('/dev/null', '/dev/zero', '/dev/urandom', '/dev/random')
+        # The video core's nodes are granted when the phone has them, their absence stops nothing.
+        self.devices('/dev/null', '/dev/zero',
+                     (('video32', (1, 9), 'msm_vidc_v4l2'),
+                      ('video33', (1, 8), 'msm_vidc_v4l2')))
         (self.state / 'running').unlink(missing_ok=True)
         code, _, err = self.run_action('start')
         self.assertEqual(code, 0, err)
         start = [line for line in self.log() if line.startswith('start ')][-1]
         self.assertIn('-s lxc.cgroup2.devices.allow=c 1:9 rw', start)
         self.assertIn('-s lxc.cgroup2.devices.allow=c 1:8 rw', start)
+        # Bound under the name Android gives them, so the codec's own card query inside finds them.
+        for node in ('video32', 'video33'):
+            self.assertIn(f'-s lxc.mount.entry={self.root}/dev/{node} dev/{node} '
+                          'none bind,optional,create=file 0 0', start)
         self.devices('/dev/null', '/dev/zero')
         (self.state / 'running').unlink()
         code, _, err = self.run_action('start')
@@ -163,6 +184,31 @@ class Controller(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn('Missing character device', err)
         self.assertEqual(sum(line.startswith('start ') for line in self.log()), 4)
+
+    # covers: install.container-base/E1
+    def test_video_nodes_are_found_by_their_driver_and_another_v4l2_node_is_left_alone(self):
+        # Firmware numbers the video core differently and PHY110 reports an empty card name for it,
+        # so neither the numbers nor the name can decide: what does is the driver behind the node
+        # (docs/108, docs/123). Every node on it is handed over, the codec picks decoder and encoder.
+        # video0 is the camera pipeline: a character device whose driver is not the video core.
+        self.devices('/dev/null', '/dev/zero',
+                     (('video32', (1, 7), 'msm_vidc_v4l2'),
+                      ('video33', (1, 9), 'msm_vidc_v4l2'),
+                      ('video0', (1, 8), 'msm_video')))
+        classdir = self.root / 'sys/class/video4linux'
+        for node in ('video32', 'video33'):
+            (classdir / node / 'name').write_text('\n')      # as PHY110 reports it: an empty name
+        (self.state / 'running').unlink(missing_ok=True)
+        code, _, err = self.run_action('start')
+        self.assertEqual(code, 0, err)
+        start = [line for line in self.log() if line.startswith('start ')][-1]
+        for rule in ('c 1:7 rw', 'c 1:9 rw'):               # /dev/full, /dev/urandom
+            self.assertIn(f'-s lxc.cgroup2.devices.allow={rule}', start)
+        for node in ('video32', 'video33'):
+            self.assertIn(f'-s lxc.mount.entry={self.root}/dev/{node} dev/{node} '
+                          'none bind,optional,create=file 0 0', start)
+        self.assertNotIn('dev/video0', start)
+        self.assertNotIn('c 1:8 rw', start)                  # /dev/random, behind msm_video
 
     # covers: install.app-restart-recovery/E5
     def test_remounted_storage_restarts_the_container_and_the_shared_folder_returns(self):
@@ -237,8 +283,10 @@ class LxcConfig(unittest.TestCase):
         self.assertEqual(sorted(self.entries('lxc.cgroup2.devices.allow')), sorted([
             'c 1:3 rwm', 'c 1:5 rwm', 'c 1:7 rwm', 'c 1:8 rwm', 'c 1:9 rwm', 'c 5:0 rwm', 'c 5:1 rwm', 'c 5:2 rwm',
             'c 136:* rwm', 'c 10:229 rwm', 'c 10:200 rwm']))
+        # The always-present devices are declared here; the video nodes are not, because their numbers
+        # differ per firmware and the controller binds them by driver name at start (docs/123).
         binds = [e.split()[0] for e in self.entries('lxc.mount.entry') if e.startswith('/dev/')]
-        self.assertEqual(sorted(binds), ['/dev/dma_heap/system', '/dev/kgsl-3d0', '/dev/video32', '/dev/video33'])
+        self.assertEqual(sorted(binds), ['/dev/dma_heap/system', '/dev/kgsl-3d0'])
 
 
 

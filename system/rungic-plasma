@@ -42,6 +42,20 @@ device_rule() (
     esac
     printf 'lxc.cgroup2.devices.allow=c %d:%d %s\n' "0x$major_hex" "0x$minor_hex" "$2"
 )
+video_nodes() (
+    # Qualcomm's V4L2 video core, by the driver behind the node rather than by node number or card
+    # name (docs/108, docs/123): firmware decides the numbers, and PHY110 reports an empty card name
+    # for its vidc nodes (video32/video33 sit under aa00000.qcom,vidc, driver msm_vidc_v4l2), so a
+    # name match would find nothing while the mounts are optional and the failure stays silent.
+    # librungiccodec picks the decoder and the encoder itself by QUERYCAP card name in the container
+    # (shared/media/codec-v4l2.c), so every node on that driver is offered, iris included. $1 holds
+    # the nodes: /dev on a phone, its stand-in under the tests.
+    for node in /sys/class/video4linux/video*; do
+        [ -c "$1/${node##*/}" ] || continue
+        ident="$(readlink "$node/device/driver" 2>/dev/null) $(readlink "$node" 2>/dev/null)"
+        case "$ident" in *vidc*|*iris*) printf '%s/%s\n' "$1" "${node##*/}";; esac
+    done
+)
 # The Linux side's RAM ceiling (docs/61): a memory cgroup of Android's (v1, /dev/memcg), so that
 # memory-hungry Linux programs are reclaimed or killed inside the container instead of Android's
 # low-memory killer taking the VPN and the desktop APK (2026-09-27). The choice, in MiB or
@@ -194,11 +208,16 @@ start_container() {
     if apply_memory_limit; then echo $$ > "$MEMCG/cgroup.procs" 2>/dev/null || true; fi
     gpu_rule=$(device_rule /dev/kgsl-3d0 rw)
     heap_rule=$(device_rule /dev/dma_heap/system r)
-    # Qualcomm's V4L2 video decoder and encoder (msm_vidc): librungiccodec codes on them directly
+    # Qualcomm's V4L2 video core (msm_vidc / iris): librungiccodec codes on its nodes directly
     # (docs/108). Optional: a phone without them starts the same, its coding through the APK.
-    video_rule= encoder_rule=
-    [ ! -c /dev/video32 ] || video_rule=$(device_rule /dev/video32 rw)
-    [ ! -c /dev/video33 ] || encoder_rule=$(device_rule /dev/video33 rw)
+    video_devices=$(video_nodes /dev)
+    # Nothing recognised as the video core: fall back to the numbers the G100 S and the X70 use,
+    # so those phones keep what they had. The loop ends on a false test when the phone has neither
+    # of them, and `set -e` must not end the start there.
+    [ -n "$video_devices" ] || video_devices=$(
+        for legacy in /dev/video32 /dev/video33; do [ -c "$legacy" ] && echo "$legacy"; done
+        true
+    )
     label=$(ls -dZ /data/user/0/com.rungic.plasma/files | cut -d ' ' -f 1)
     case "$label" in u:object_r:app_data_file:s0:c*) ;;
       *) echo 'Cannot identify desktop APK SELinux label' >&2; exit 1;;
@@ -208,8 +227,11 @@ start_container() {
     mkdir -p "$HOST_STATE/transfer"
     printf '%s\n' "$label" | sed 's/:app_data_file:/:appdomain_tmpfs:/' > "$HOST_STATE/android-shm-context"
     set -- -s "$gpu_rule" -s "$heap_rule"
-    [ -z "$video_rule" ] || set -- "$@" -s "$video_rule"
-    [ -z "$encoder_rule" ] || set -- "$@" -s "$encoder_rule"
+    for video in $video_devices; do
+        video_rule=$(device_rule "$video" rw) || continue
+        set -- "$@" -s "$video_rule" \
+                    -s "lxc.mount.entry=$video dev/${video##*/} none bind,optional,create=file 0 0"
+    done
     # An image rootfs (system/rootfs-image, docs/61 §7): a pre-mount hook mounts its device-mapper
     # device onto the rootfs directory, and the data that must not roll back with the system comes
     # from state/ (bind mounts).

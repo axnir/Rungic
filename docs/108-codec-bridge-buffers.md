@@ -99,6 +99,7 @@ G100 S 装 APK 2.33（`adb install -r`，数据保留），Linux 端用 `rungic-
 Kevin 定了方向（2026-10-04）：解码绕开 Codec2，`librungiccodec` 直接用 msm_vidc 的 V4L2 解码器，MediaCodec 桥作为回退。GStreamer 和私有 FFmpeg 都经过同一个 `codec-client`，上层不用改。
 
 - **选择**：解码器（非编码器）在 `/dev` 里找 QUERYCAP 名为 `msm_vidc_decoder`、OUTPUT 格式里有该编码的节点。找不到、打不开或启动失败，就走 MediaCodec 桥。`RUNGIC_CODEC_V4L2=0` 关闭；Firefox 预加载（`RUNGIC_CODEC_PRECONNECT`）下也不用，因为沙箱打不开设备，除非设 `=1`。
+  > 2026-11-04 修订（[123](123-phy110-onboarding.md)）：PHY110 上 msm_vidc 把 card 名留成空串（`video32`/`video33` 的 sysfs `name` 也只有换行），而 sysfs `name` 与 `cap.card` 在内核里同源，于是 `strcmp` 必败、直通静默失效。选择改为：card 名精确匹配优先（既有手机行为不变），否则认 **memory-to-memory** 设备（`V4L2_CAP_VIDEO_M2M` / `_MPLANE`），方向仍由下面的 `ENUM_FMT` 决定。摄像头节点不是 M2M，不会被误认；同一台机器上的解码器与编码器也由格式方向分开。见 `is_core()`。
 - **调用顺序**（固件只认这一种）：
   1. S_FMT OUTPUT，REQBUFS（DMABUF），从 `/dev/dma_heap/system` 分配并映射，订阅 SOURCE_CHANGE，STREAMON OUTPUT。
   2. 只排入一个码流单元。之后到来的单元先留在进程里，直到 SOURCE_CHANGE 出现。
@@ -107,6 +108,8 @@ Kevin 定了方向（2026-10-04）：解码绕开 Codec2，`librungiccodec` 直�
 - **刷新**（seek）：整段关掉，在同一个描述符号上重开（`dup3`，因为消费者持有这个号），并把保存的 SPS/PPS/VPS 放在下一个单元前面。不在会话中途重启流。中途换分辨率直接报错，由消费者按新 caps 重开。
 - **帧**：时间戳原样带进带出，用它对回帧号。帧直接放在 CAPTURE 缓冲里，读之前和读之后各做一次 `DMA_BUF_IOCTL_SYNC`，消费者用 `rungic_codec_copy_nv12/p010/i420` 复制出去。
 - **容器**：控制器在 `/dev/video32` 存在时，按当前设备号授予 rw，并在 `plasma.config` 里用 `optional` 绑定；DMA 堆原本就为 GPU 映射了。没有这个节点的手机照常启动。
+
+  > 2026-11-04 修订（[123](123-phy110-onboarding.md)）：接 PHY110 时发现节点号随固件而变，写死会在 `optional` 下静默失效。控制器改为按 `sysfs` 的 `device/driver` 链接找 Qualcomm 视频核心（`*vidc*` / `*iris*`）上的**全部**节点 —— 不按节点号、也不按 card 名（本机是空串），逐个授予当前设备号并在 `/dev/<同名节点>` 挂载；`plasma.config` 不再列这两个节点，一个都找不到时才退回原来两个节点号。交出全部节点而不是挑解码器/编码器，是因为选择逻辑在 `codec-v4l2.c` 里已经按 QUERYCAP 与格式做过一遍，控制器替它猜只会多一层错的可能。
 - **离线测试**（`tools/tests/test_codec_v4l2.py`）：一个假的 msm_vidc 设备（`codec_v4l2_driver.c`，用 `--wrap` 截获 open、ioctl、poll、close、dup3）。它按真驱动的规则把违规记成错误：
   - 非 DMABUF；
   - OUTPUT 开流前就排入码流单元；
