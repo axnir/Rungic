@@ -29,7 +29,9 @@ int main(void) {
     CHECK(eglMakeCurrent(d, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
     const char *renderer = (const char*)glGetString(GL_RENDERER);
     printf("EGL: %d.%d %s\nGL_VENDOR: %s\nGL_RENDERER: %s\nGL_VERSION: %s\n", major, minor, eglQueryString(d,EGL_VENDOR), glGetString(GL_VENDOR), renderer, glGetString(GL_VERSION));
-    CHECK(renderer && (strstr(renderer, "Adreno") || strstr(renderer, "FD710")) && !strstr(renderer,"llvmpipe"));
+    /* Freedreno reports the GPU generation, not a model name: FD710 on Adreno 710,
+     * FD750 on Adreno 750 (PHY110). Accept the whole 7xx family and never llvmpipe. */
+    CHECK(renderer && (strstr(renderer, "Adreno") || strstr(renderer, "FD7")) && !strstr(renderer,"llvmpipe"));
     GLuint tex, fbo;
     glGenTextures(1,&tex); glBindTexture(GL_TEXTURE_2D,tex);
     glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,64,64,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
