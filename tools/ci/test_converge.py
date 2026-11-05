@@ -66,11 +66,22 @@ case "$1 $2 ${3:-}" in
  "package com.rungic.plasma ") cat "$f/permissions";;
  *) exit 92;;
 esac''')
-        executable(self.bin / 'appops', '''case "$1" in
- get) cat "$TEST_ROOT/fake/overlay";;
- set) echo "appops $*" >> "$TEST_ROOT/calls"; [ -z "${REFUSE_APPOPS:-}" ] || exit 1
-      echo "SYSTEM_ALERT_WINDOW: allow" > "$TEST_ROOT/fake/overlay";;
- *) exit 93;;
+        executable(self.bin / 'appops', '''f=$TEST_ROOT/fake
+case "$1 $3" in
+ "get RUN_ANY_IN_BACKGROUND") echo "RUN_ANY_IN_BACKGROUND: $(cat $f/background 2>/dev/null || echo default)";;
+ "set RUN_ANY_IN_BACKGROUND") echo "appops $*" >> "$TEST_ROOT/calls"
+      [ -z "${REFUSE_APPOPS:-}" ] || exit 1; echo allow > "$f/background";;
+ *) case "$1" in
+      get) cat "$f/overlay";;
+      set) echo "appops $*" >> "$TEST_ROOT/calls"; [ -z "${REFUSE_APPOPS:-}" ] || exit 1
+           echo "SYSTEM_ALERT_WINDOW: allow" > "$f/overlay";;
+      *) exit 93;;
+    esac;;
+esac''')
+        # A vendor ROM's own properties; absent on a phone without one, as getprop missing is.
+        executable(self.bin / 'getprop', '''case "$1" in
+ ro.build.version.oplusrom) echo "${FAKE_VENDOR_ROM:-}";;
+ *) exit 1;;
 esac''')
         executable(self.bin / 'magisk', '''[ "$1" = --sqlite ] || exit 94
 case "$2" in
@@ -130,6 +141,22 @@ esac''')
         second = self.run_mode('apply')
         self.assertEqual({k: v[0] for k, v in second.items()}, {k: 'ok' for k in second})
         self.assertEqual(self.calls(), [], 'nothing is written when everything is right')
+
+    # covers: install.independent-runtime/E7
+    def test_vendor_rom_sets_the_op_android_has_and_reports_the_ones_it_does_not(self):
+        result = self.run_mode('apply', FAKE_VENDOR_ROM='V15.0.1')
+        self.assertEqual(result['vendor-background-run'], ('changed', ''))
+        self.assertIn(f'appops set {APP} RUN_ANY_IN_BACKGROUND allow', self.calls())
+        # Battery usage, auto start, associated start and permission auto-revoke have no public
+        # switch: reported, never silently assumed.
+        self.assertEqual(result['vendor-background-policy'], ('report', 'vendor-settings'))
+        self.assertEqual(self.run_mode('apply', FAKE_VENDOR_ROM='V15.0.1')['vendor-background-run'], ('ok', ''))
+
+    # covers: install.independent-runtime/E7
+    def test_plain_android_has_no_vendor_items(self):
+        result = self.run_mode('check')
+        self.assertNotIn('vendor-background-run', result)
+        self.assertNotIn('vendor-background-policy', result)
 
     # covers: install.independent-runtime/E7
     def test_check_only_looks(self):

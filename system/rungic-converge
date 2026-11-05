@@ -78,6 +78,18 @@ overlay() {
 }
 converge overlay overlay_allowed overlay
 
+# Vendors keep a second background policy beside Android's own (docs/123): ColorOS (OPPO, OnePlus,
+# realme) has battery usage, auto start, associated start and permission auto-revoke, none of them
+# with a public switch. What Android does expose is set here; the rest is reported for the user to
+# set in Settings, rather than left looking automated. A phone without such a ROM keeps neither.
+rom="$(getprop ro.build.version.oplusrom 2>/dev/null)$(getprop ro.build.version.opporom 2>/dev/null)"
+if [ -n "$rom" ]; then
+    run_allowed() { bounded appops get "$APP" RUN_ANY_IN_BACKGROUND 2>/dev/null | grep -q ': allow'; }
+    run_allow() { bounded appops set "$APP" RUN_ANY_IN_BACKGROUND allow; }
+    converge vendor-background-run run_allowed run_allow
+    result vendor-background-policy report vendor-settings
+fi
+
 # The app's root: a row in Magisk's policies (fixed Magisk 31.0 schema, docs/39). KernelSU keeps its
 # allowlist to itself (ksud has no query); the user grants it in the manager and the app says so (#57).
 if [ "$RUNGIC_ROOT" = kernelsu ]; then
